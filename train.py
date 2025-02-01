@@ -6,7 +6,6 @@ from model import ChatbotModel
 from dataset_loader import load_dataset
 import json
 import os
-import time
 import warnings
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -19,6 +18,7 @@ def main():
     EMBED_DIM = config["embed_dim"]
     HIDDEN_DIM = config["hidden_dim"]
     NUM_LAYERS = config["num_layers"]
+    EPOCHS = config["epochs"]
     BATCH_SIZE = config["batch_size"]
     NUM_WORKERS = config["num_workers"]
     CHECKPOINT_PATH = config["checkpoint_path"]
@@ -30,31 +30,49 @@ def main():
     dataset, vocab = load_dataset("dataset.csv", VOCAB_SIZE)
     print(f"✅ Датасет загружен! Найдено {len(vocab)} уникальных слов.")
 
+    os.makedirs("trained_model", exist_ok=True)
+    with open("trained_model/vocab.json", "w", encoding="utf-8") as f:
+        json.dump(vocab, f, ensure_ascii=False, indent=4)
+    print("✅ Словарь сохранён!")
+
     train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
     print(f"✅ DataLoader создан! {len(train_loader)} батчей для обучения.")
 
+    start_epoch = 0
+    start_batch = 0
     if os.path.exists(CHECKPOINT_PATH):
         print(f"🔄 Найдена контрольная точка {CHECKPOINT_PATH}, загружаем...")
         checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-        model = ChatbotModel.from_pretrained(checkpoint["model_state"], new_vocab_size=VOCAB_SIZE)
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        old_vocab_size = checkpoint["model_state"]["embedding.weight"].shape[0]
+        
+        if old_vocab_size < VOCAB_SIZE:
+            print(f"🔄 Расширяем модель с {old_vocab_size} до {VOCAB_SIZE} слов...")
+            model = ChatbotModel.from_pretrained(checkpoint["model_state"], new_vocab_size=VOCAB_SIZE)
+        else:
+            model = ChatbotModel.from_pretrained(checkpoint["model_state"])
+        
+        model.to(device)
+        optimizer = optim.Adam(model.parameters(), lr=0.0001)
         optimizer.load_state_dict(checkpoint["optimizer_state"])
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
+        
         start_epoch = checkpoint["epoch"]
         start_batch = checkpoint["batch"]
-        print(f"Загружено состояние: Эпоха {start_epoch}, Батч {start_batch}")
+        print(f"✅ Обучение продолжается с эпохи {start_epoch + 1}, батча {start_batch}.")
     else:
         print("⚠️ Контрольная точка не найдена. Начинаем обучение с нуля.")
         model = ChatbotModel(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, NUM_LAYERS)
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-        start_epoch = 0
-        start_batch = 0
-
-    model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+        model.to(device)
+        optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
     print("✅ Модель загружена на", next(model.parameters()).device)
 
-    for epoch in range(start_epoch, config["epochs"]):
+    print("🚀 Начинаем обучение...")
+    for epoch in range(start_epoch, EPOCHS):
+        model.train()
         epoch_loss = 0
         for batch_idx, (inputs, targets) in enumerate(train_loader):
             if epoch == start_epoch and batch_idx < start_batch:
@@ -71,7 +89,7 @@ def main():
             epoch_loss += loss.item()
 
             if batch_idx % 10 == 0:
-                print(f"🟢 Эпоха {epoch+1}/{config['epochs']}, Батч {batch_idx}/{len(train_loader)}, Потери: {loss.item():.4f}")
+                print(f"🟢 Эпоха {epoch+1}/{EPOCHS}, Батч {batch_idx}/{len(train_loader)}, Потери: {loss.item():.4f}")
 
             if batch_idx % 50 == 0:
                 torch.save({

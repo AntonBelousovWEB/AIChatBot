@@ -3,16 +3,20 @@ import torch
 from torch.utils.data import Dataset
 import nltk
 from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
 import os
 import warnings
+import re
+import string
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 if not os.path.exists(os.path.join(nltk.data.find('tokenizers'), 'punkt.zip')):
     nltk.download('punkt', quiet=True)
+nltk.download('stopwords', quiet=True)
 
 class TextDataset(Dataset):
-    def __init__(self, dataframe, vocab, seq_length=50):
+    def __init__(self, dataframe, vocab, seq_length=100):
         self.texts = dataframe["tweet"].dropna().tolist()
         self.vocab = vocab
         self.seq_length = seq_length
@@ -22,7 +26,15 @@ class TextDataset(Dataset):
         print(f"✅ Токенизация завершена! Всего слов после токенизации: {len(self.processed_texts)}")
 
     def preprocess_texts(self):
-        return [word for text in self.texts for word in word_tokenize(text.lower())]
+        return [word for text in self.texts for word in self.clean_text(text)]
+
+    def clean_text(self, text):
+        text = text.lower()
+        text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'@\w+', '', text)
+        text = text.translate(str.maketrans('', '', string.punctuation))
+        text = re.sub(r'\d+', '', text)
+        return word_tokenize(text)
 
     def __len__(self):
         return len(self.processed_texts) - self.seq_length
@@ -36,9 +48,10 @@ class TextDataset(Dataset):
 
 def build_vocab(texts, vocab_size=10000):
     print(f"🔄 Строим словарь из {len(texts)} текстов...")
-    words = [word for text in texts for word in word_tokenize(text.lower())]
+    words = [word for text in texts for word in TextDataset.clean_text(TextDataset, text)]
     freq_dist = nltk.FreqDist(words)
-    vocab = {word: i for i, (word, _) in enumerate(freq_dist.most_common(vocab_size))}
+    vocab = {word: i+1 for i, (word, _) in enumerate(freq_dist.most_common(vocab_size-1))}
+    vocab['<UNK>'] = 0
     print(f"✅ Словарь создан! Размер: {len(vocab)} слов.")
     return vocab
 

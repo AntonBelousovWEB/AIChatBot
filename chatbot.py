@@ -3,6 +3,7 @@ import json
 from nltk.tokenize import word_tokenize
 from model import ChatbotModel
 import os
+import torch.nn.functional as F
 
 with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
@@ -35,22 +36,31 @@ def load_model(checkpoint=False):
     model.eval()
     return model
 
-def generate_response(input_text, checkpoint=False):
+def generate_response(input_text, checkpoint=False, max_length=20):
     model = load_model(checkpoint)
     words = word_tokenize(input_text.lower())
-    input_ids = torch.tensor([vocab.get(word, 0) for word in words], dtype=torch.long).unsqueeze(0)
-    output = model(input_ids)
+    input_ids = torch.tensor([[vocab.get(word, 0) for word in words]], dtype=torch.long)
 
-    predicted_id = torch.argmax(output, dim=-1).squeeze()
-    
-    if isinstance(predicted_id, torch.Tensor):
-        predicted_id = predicted_id.tolist()
-    
-    if isinstance(predicted_id, int):
-        predicted_id = [predicted_id]
+    response_words = []
+    model.eval()
 
-    response = " ".join([list(vocab.keys())[idx] for idx in predicted_id if idx < len(vocab)])
-    return response
+    for _ in range(max_length):
+        output = model(input_ids)
+        probabilities = F.softmax(output[0, -1], dim=-1)
+        predicted_id = torch.multinomial(probabilities, num_samples=1).item()
+
+        if predicted_id in vocab.values():
+            next_word = list(vocab.keys())[list(vocab.values()).index(predicted_id)]
+        else:
+            next_word = "..."
+
+        response_words.append(next_word)
+        input_ids = torch.tensor([[vocab.get(word, 0) for word in (words + response_words)[-10:]]], dtype=torch.long)
+
+        if next_word in [".", "!", "?", "..."]:
+            break
+
+    return " ".join(response_words)
 
 while True:
     user_input = input("Вы: ")
