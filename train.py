@@ -7,8 +7,11 @@ from dataset_loader import load_dataset
 import json
 import os
 import warnings
+import torch.backends.cudnn as cudnn
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+cudnn.benchmark = True
 
 def main():
     with open("config.json", "r", encoding="utf-8") as f:
@@ -22,53 +25,43 @@ def main():
     BATCH_SIZE = config["batch_size"]
     NUM_WORKERS = config["num_workers"]
     CHECKPOINT_PATH = config["checkpoint_path"]
+    VOCAB_PATH = "trained_model/vocab.json"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🖥️ Используемое устройство: {device}")
 
-    print("🔄 Загрузка датасета...")
-    dataset, vocab = load_dataset("dataset.csv", VOCAB_SIZE)
-    print(f"✅ Датасет загружен! Найдено {len(vocab)} уникальных слов.")
+    if os.path.exists(VOCAB_PATH):
+        print("✅ Найден существующий словарь, загружаем...")
+        with open(VOCAB_PATH, "r", encoding="utf-8") as f:
+            vocab = json.load(f)
+        dataset, _ = load_dataset("dataset.csv", VOCAB_SIZE)
+    else:
+        print("🔄 Словарь не найден, создаём новый...")
+        dataset, vocab = load_dataset("dataset.csv", VOCAB_SIZE)
+        os.makedirs("trained_model", exist_ok=True)
+        with open(VOCAB_PATH, "w", encoding="utf-8") as f:
+            json.dump(vocab, f, ensure_ascii=False, indent=4)
+        print("✅ Новый словарь сохранён!")
 
-    os.makedirs("trained_model", exist_ok=True)
-    with open("trained_model/vocab.json", "w", encoding="utf-8") as f:
-        json.dump(vocab, f, ensure_ascii=False, indent=4)
-    print("✅ Словарь сохранён!")
-
-    train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
+    train_loader = DataLoader(
+        dataset, batch_size=BATCH_SIZE, shuffle=True,
+        num_workers=NUM_WORKERS, pin_memory=True, persistent_workers=True
+    )
     print(f"✅ DataLoader создан! {len(train_loader)} батчей для обучения.")
 
-    start_epoch = 0
-    start_batch = 0
+    model = ChatbotModel(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, NUM_LAYERS).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+    scaler = torch.cuda.amp.GradScaler()
+
+    start_epoch, start_batch = 0, 0
     if os.path.exists(CHECKPOINT_PATH):
         print(f"🔄 Найдена контрольная точка {CHECKPOINT_PATH}, загружаем...")
         checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-        old_vocab_size = checkpoint["model_state"]["embedding.weight"].shape[0]
-        
-        if old_vocab_size < VOCAB_SIZE:
-            print(f"🔄 Расширяем модель с {old_vocab_size} до {VOCAB_SIZE} слов...")
-            model = ChatbotModel.from_pretrained(checkpoint["model_state"], new_vocab_size=VOCAB_SIZE)
-        else:
-            model = ChatbotModel.from_pretrained(checkpoint["model_state"])
-        
-        model.to(device)
-        optimizer = optim.Adam(model.parameters(), lr=0.0001)
+        model.load_state_dict(checkpoint["model_state"])
         optimizer.load_state_dict(checkpoint["optimizer_state"])
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
-        
-        start_epoch = checkpoint["epoch"]
-        start_batch = checkpoint["batch"]
+        start_epoch, start_batch = checkpoint["epoch"], checkpoint["batch"]
         print(f"✅ Обучение продолжается с эпохи {start_epoch + 1}, батча {start_batch}.")
-    else:
-        print("⚠️ Контрольная точка не найдена. Начинаем обучение с нуля.")
-        model = ChatbotModel(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, NUM_LAYERS)
-        model.to(device)
-        optimizer = optim.Adam(model.parameters(), lr=0.0001)
-
-    print("✅ Модель загружена на", next(model.parameters()).device)
 
     print("🚀 Начинаем обучение...")
     for epoch in range(start_epoch, EPOCHS):
@@ -81,15 +74,19 @@ def main():
             inputs, targets = inputs.to(device), targets.to(device)
 
             optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = F.cross_entropy(outputs.view(-1, VOCAB_SIZE), targets.view(-1))
-            loss.backward()
-            optimizer.step()
+
+            with torch.cuda.amp.autocast():
+                outputs = model(inputs)
+                loss = F.cross_entropy(outputs.view(-1, VOCAB_SIZE), targets.view(-1))
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             epoch_loss += loss.item()
 
             if batch_idx % 10 == 0:
-                print(f"🟢 Эпоха {epoch+1}/{EPOCHS}, Батч {batch_idx}/{len(train_loader)}, Потери: {loss.item():.4f}")
+                print(f"🟢 Эпоха {epoch+1}/{EPOCHS}, Батч {batch_idx}/{len(train_loader)}, Лосс: {loss.item():.4f}")
 
             if batch_idx % 50 == 0:
                 torch.save({
@@ -100,13 +97,13 @@ def main():
                 }, CHECKPOINT_PATH)
                 print(f"💾 Прогресс сохранён! (эпоха {epoch+1}, батч {batch_idx})")
 
-        print(f"✅ Эпоха {epoch+1} завершена! Средние потери: {epoch_loss / len(train_loader):.4f}")
+        scheduler.step()
+        avg_loss = epoch_loss / len(train_loader)
+        print(f"✅ Эпоха {epoch+1} завершена! Средний лосс: {avg_loss:.4f}")
 
     torch.save(model.state_dict(), "trained_model/chatbot.pth")
     print("✅ Финальная модель сохранена!")
-
     print("🎉 Обучение завершено!")
-    os.remove(CHECKPOINT_PATH)
 
 if __name__ == "__main__":
     main()

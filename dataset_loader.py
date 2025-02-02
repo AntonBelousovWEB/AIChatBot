@@ -3,38 +3,54 @@ import torch
 from torch.utils.data import Dataset
 import nltk
 from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
 import os
 import warnings
 import re
-import string
+import ast
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-if not os.path.exists(os.path.join(nltk.data.find('tokenizers'), 'punkt.zip')):
-    nltk.download('punkt', quiet=True)
-nltk.download('stopwords', quiet=True)
+nltk.download('punkt', quiet=True)
 
 class TextDataset(Dataset):
     def __init__(self, dataframe, vocab, seq_length=100):
-        self.texts = dataframe["tweet"].dropna().tolist()
+        self.texts = self.process_dialogs(dataframe["dialog"].dropna().tolist())
         self.vocab = vocab
         self.seq_length = seq_length
 
-        print(f"🔄 Начинаем токенизацию {len(self.texts)} строк...")
+        print(f"🔄 Токенизация {len(self.texts)} реплик...")
         self.processed_texts = self.preprocess_texts()
-        print(f"✅ Токенизация завершена! Всего слов после токенизации: {len(self.processed_texts)}")
+        print(f"✅ Токенизация завершена! Всего слов: {len(self.processed_texts)}")
 
-    def preprocess_texts(self):
-        return [word for text in self.texts for word in self.clean_text(text)]
+    def process_dialogs(self, dialog_list):
+        cleaned_dialogs = []
+        for raw_text in dialog_list:
+            try:
+                sentences = ast.literal_eval(raw_text)
+                if isinstance(sentences, list):
+                    cleaned_dialogs.extend([self.clean_text(sentence) for sentence in sentences])
+            except Exception as e:
+                print(f"Ошибка обработки диалога: {e}")
+        return cleaned_dialogs
 
     def clean_text(self, text):
         text = text.lower()
-        text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-        text = re.sub(r'@\w+', '', text)
-        text = text.translate(str.maketrans('', '', string.punctuation))
-        text = re.sub(r'\d+', '', text)
-        return word_tokenize(text)
+
+        text = re.sub(r"http\S+|www\S+|https\S+", "", text)
+        text = re.sub(r"@\w+", "", text)
+        text = re.sub(r"<.*?>", "", text)
+
+        text = text.replace("``", "").replace("''", "").replace("[", "").replace("]", "").replace("'", " ")
+
+        text = re.sub(r"(?<=[a-zA-Z])\.(?=[a-zA-Z])", " . ", text)
+
+        tokens = word_tokenize(text)
+
+        return tokens
+
+
+    def preprocess_texts(self):
+        return [word for sentence in self.texts for word in sentence]
 
     def __len__(self):
         return len(self.processed_texts) - self.seq_length
@@ -46,21 +62,29 @@ class TextDataset(Dataset):
         target_ids = torch.tensor([self.vocab.get(word, 0) for word in target_text], dtype=torch.long)
         return input_ids, target_ids
 
-def build_vocab(texts, vocab_size=10000):
-    print(f"🔄 Строим словарь из {len(texts)} текстов...")
+def build_vocab(texts, vocab_size=20000):
+    print(f"🔄 Строим словарь из {len(texts)} диалогов...")
     words = [word for text in texts for word in TextDataset.clean_text(TextDataset, text)]
+
+    mandatory_tokens = {".", "?", "!", "..."}
     freq_dist = nltk.FreqDist(words)
-    vocab = {word: i+1 for i, (word, _) in enumerate(freq_dist.most_common(vocab_size-1))}
+    
+    vocab = {word: i+1 for i, (word, _) in enumerate(freq_dist.most_common(vocab_size - len(mandatory_tokens) - 1))}
+    
+    for token in mandatory_tokens:
+        if token not in vocab:
+            vocab[token] = len(vocab) + 1
+
     vocab['<UNK>'] = 0
     print(f"✅ Словарь создан! Размер: {len(vocab)} слов.")
     return vocab
 
-def load_dataset(csv_path, vocab_size=10000):
+def load_dataset(csv_path, vocab_size=20000):
     print(f"🔄 Загружаем CSV {csv_path}...")
     df = pd.read_csv(csv_path)
     print(f"✅ CSV загружен! Всего строк: {len(df)}")
-    
-    texts = df["tweet"].dropna().tolist()
+
+    texts = df["dialog"].dropna().tolist()
     vocab = build_vocab(texts, vocab_size)
     dataset = TextDataset(df, vocab)
     return dataset, vocab

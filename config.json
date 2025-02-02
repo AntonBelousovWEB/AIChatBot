@@ -1,11 +1,11 @@
 {
-  "vocab_size": 10000,
-  "embed_dim": 256,
-  "hidden_dim": 512,
-  "num_layers": 2,
+  "vocab_size": 20000,
+  "embed_dim": 300,
+  "hidden_dim": 768,
+  "num_layers": 3,
   "checkpoint_path": "trained_model/chatbot_checkpoint.pth",
   "final_model_path": "trained_model/chatbot.pth",
-  "epochs": 10,
-  "batch_size": 32,
+  "epochs": 30,
+  "batch_size": 16,
   "num_workers": 4
 }

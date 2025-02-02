@@ -1,4 +1,5 @@
 /trained_model/*
 dataset.csv
+dataset-v.csv
 dataset.txt
 trained_model.rar
