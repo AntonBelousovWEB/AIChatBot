@@ -18,28 +18,28 @@ FINAL_MODEL_PATH = config["final_model_path"]
 with open("trained_model/vocab.json", "r", encoding="utf-8") as f:
     vocab = json.load(f)
 
-model = ChatbotModel(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, NUM_LAYERS)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = ChatbotModel(VOCAB_SIZE).to(device)
 
 def load_model(checkpoint=False):
     if checkpoint and os.path.exists(CHECKPOINT_PATH):
-        print(f"🔄 Загружаем модель из чекпоинта {CHECKPOINT_PATH}...")
-        checkpoint_data = torch.load(CHECKPOINT_PATH, weights_only=True)
+        checkpoint_data = torch.load(CHECKPOINT_PATH, map_location=device)
         model.load_state_dict(checkpoint_data["model_state"])
-        print("✅ Чекпоинт загружен!")
     elif os.path.exists(FINAL_MODEL_PATH):
-        print(f"🔄 Загружаем финальную модель {FINAL_MODEL_PATH}...")
-        model.load_state_dict(torch.load(FINAL_MODEL_PATH, weights_only=True))
-        print("✅ Финальная модель загружена!")
-    else:
-        print("⚠️ Модель не найдена! Используется случайная инициализация.")
-    
+        model.load_state_dict(torch.load(FINAL_MODEL_PATH, map_location=device))
     model.eval()
     return model
 
-def generate_response(input_text, checkpoint=False, max_length=20):
-    model = load_model(checkpoint)
+def ask_for_checkpoint():
+    use_checkpoint = input("Использовать чекпоинт? (yes/no): ").strip().lower() == "yes"
+    return use_checkpoint
+
+use_checkpoint = ask_for_checkpoint()
+load_model(checkpoint=use_checkpoint)
+
+def generate_response(input_text, max_length=20):
     words = word_tokenize(input_text.lower())
-    input_ids = torch.tensor([[vocab.get(word, 0) for word in words]], dtype=torch.long)
+    input_ids = torch.tensor([[vocab.get(word, 0) for word in words]], dtype=torch.long).to(device)
 
     response_words = []
     model.eval()
@@ -55,7 +55,7 @@ def generate_response(input_text, checkpoint=False, max_length=20):
             next_word = "..."
 
         response_words.append(next_word)
-        input_ids = torch.tensor([[vocab.get(word, 0) for word in (words + response_words)[-10:]]], dtype=torch.long)
+        input_ids = torch.tensor([[vocab.get(word, 0) for word in (words + response_words)[-10:]]], dtype=torch.long).to(device)
 
         if next_word in [".", "!", "?", "..."]:
             break
@@ -66,5 +66,4 @@ while True:
     user_input = input("Вы: ")
     if user_input.lower() == "exit":
         break
-    use_checkpoint = input("Использовать чекпоинт? (yes/no): ").strip().lower() == "yes"
-    print("Бот:", generate_response(user_input, checkpoint=use_checkpoint))
+    print("Бот:", generate_response(user_input))

@@ -8,9 +8,9 @@ import json
 import os
 import warnings
 import torch.backends.cudnn as cudnn
+from transformers import AdamW
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
-
 cudnn.benchmark = True
 
 def main():
@@ -18,9 +18,6 @@ def main():
         config = json.load(f)
 
     VOCAB_SIZE = config["vocab_size"]
-    EMBED_DIM = config["embed_dim"]
-    HIDDEN_DIM = config["hidden_dim"]
-    NUM_LAYERS = config["num_layers"]
     EPOCHS = config["epochs"]
     BATCH_SIZE = config["batch_size"]
     NUM_WORKERS = config["num_workers"]
@@ -49,16 +46,20 @@ def main():
     )
     print(f"✅ DataLoader создан! {len(train_loader)} батчей для обучения.")
 
-    model = ChatbotModel(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, NUM_LAYERS).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    if os.path.exists(CHECKPOINT_PATH):
+        print(f"🔄 Найдена контрольная точка {CHECKPOINT_PATH}, загружаем...")
+        model = ChatbotModel.from_pretrained(CHECKPOINT_PATH, VOCAB_SIZE).to(device)
+    else:
+        print("⚠️ Чекпоинт не найден, создаём новую модель GPT-2.")
+        model = ChatbotModel(VOCAB_SIZE).to(device)
+
+    optimizer = AdamW(model.parameters(), lr=5e-5)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
-    scaler = torch.cuda.amp.GradScaler()
 
     start_epoch, start_batch = 0, 0
     if os.path.exists(CHECKPOINT_PATH):
-        print(f"🔄 Найдена контрольная точка {CHECKPOINT_PATH}, загружаем...")
         checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-        model.load_state_dict(checkpoint["model_state"])
+        model.load_state_dict(checkpoint["model_state"], strict=False)
         optimizer.load_state_dict(checkpoint["optimizer_state"])
         start_epoch, start_batch = checkpoint["epoch"], checkpoint["batch"]
         print(f"✅ Обучение продолжается с эпохи {start_epoch + 1}, батча {start_batch}.")
@@ -75,13 +76,11 @@ def main():
 
             optimizer.zero_grad()
 
-            with torch.cuda.amp.autocast():
-                outputs = model(inputs)
-                loss = F.cross_entropy(outputs.view(-1, VOCAB_SIZE), targets.view(-1))
+            outputs = model(inputs)
+            loss = F.cross_entropy(outputs.view(-1, VOCAB_SIZE), targets.view(-1))
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            loss.backward()
+            optimizer.step()
 
             epoch_loss += loss.item()
 
